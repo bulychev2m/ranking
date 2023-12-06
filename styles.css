@@ -1,0 +1,201 @@
+/* Основные стили для всего документа */
+body {
+    font-family: Arial, sans-serif;
+    padding: 10px;
+    background-color: #1E2027; /* Цвет заднего фона */
+    color: #FFFFFF; /* Цвет текста */
+}
+
+/* Стили для навигационного блока */
+nav {
+    background-color: #262A2F; /* Цвет фона навигации */
+    padding: 10px;
+    margin: 0; /* Сброс внешних отступов */
+    width: 100%; /* Растягиваем по всей ширине */
+    box-sizing: border-box; /* Учитываем padding в общей ширине */
+}
+
+/* Стили для списка элементов меню */
+nav ul {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    justify-content: space-around;
+}
+
+/* Стили для каждого элемента меню */
+nav li {
+    margin-right: 20px;
+}
+
+/* Стили для ссылок в меню */
+nav a {
+    text-decoration: none;
+    color: #FFFFFF;
+    font-weight: bold;
+    font-size: 16px;
+    padding: 10px 20px;
+    display: block;
+    transition: color 0.3s ease-in-out; /* Плавный переход цвета текста */
+}
+
+/* Стили для активной и наведенной ссылки в меню */
+nav a.current,
+nav a:hover {
+    color: #FD5433; /* Цвет текста при наведении или активном состоянии */
+}
+
+/* Стили для вложенного iframe */
+iframe {
+    width: 100%;
+    height: 80vh;
+    border: none;
+}
+
+/* Стили для ссылок в блоке изображений */
+.image-links a {
+    text-decoration: none;
+}
+
+/* Стили для изображений в блоке изображений */
+.image-links img {
+    width: 200px;
+    height: auto;
+    border-radius: 10px;
+    transition: transform 0.3s ease-in-out; /* Плавный переход при наведении на изображение */
+}
+
+/* Стили для увеличения изображения при наведении */
+.image-links a:hover img {
+    transform: scale(1.1);
+}
+
+/* Стили для футера */
+footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    padding: 10px; /* Добавляем или уменьшаем внутренние отступы, чтобы уменьшить высоту */
+    background-color: #262A2F; /* Цвет фона футера */
+}
+
+/* Стили для надписи "2023 Путеводитель по Здоровому Образу Жизни" в футере */
+.left-content p {
+    font-family: Arial, sans-serif;
+    color: #FFFFFF; /* Белый цвет текста */
+    margin-bottom: 10px; /* Добавим отступ снизу */
+}
+
+/* Стили для надписи "Связаться с нами" в футере */
+.left-content p a {
+    font-family: Arial, sans-serif;
+    color: #FD5433; /* Оранжевый цвет текста */
+    text-decoration: none;
+}
+
+.right-content {
+    display: flex;
+    justify-content: flex-end; /* Выравнивание элементов вправо */
+    align-items: center; /* Выравнивание по вертикали по центру */
+}
+
+/* Стили для графической ссылки в правой части футера */
+.right-content a img {
+    width: 40px; /* Задаем желаемую ширину изображения */
+    height: auto; /* Сохраняем соотношение сторон */
+    border-radius: 5px; /* Закругляем углы изображения */
+    margin-right: 10px;
+}
+
+/* Стили для ссылок в боковой навигации */
+.side-nav a {
+    text-decoration: none;
+    color: #FFFFFF; /* Белый цвет текста */
+    font-weight: bold;
+    font-size: 14px;
+    padding: 8px;
+    display: block;
+    transition: background-color 0.3s ease-in-out; /* Плавный переход цвета фона */
+}
+
+/* Стили для активной и наведенной ссылки в боковой навигации */
+.side-nav a:hover {
+    background-color: #F05C3E; /* Оранжевый цвет фона при наведении на ссылку */
+}
+
+/* Добавляем стили для блока с изображениями и ссылками */
+.image-links {
+    display: flex;
+    flex-wrap: wrap; /* Позволяет элементам переноситься на новую строку при нехватке места */
+    justify-content: space-around;
+    margin-top: 20px;
+}
+
+/* Обновленные стили для изображений в блоке изображений */
+.image-links img {
+    width: calc(50% - 10px); /* Вычтите половину отступа для равномерного распределения по двум столбцам */
+    height: 400px; /* Задаем желаемую высоту для всех изображений */
+    object-fit: cover; /* Сохраняем соотношение сторон и обрезаем изображение, чтобы оно полностью заполнило контейнер */
+    border-radius: 10px;
+    transition: transform 0.3s ease-in-out;
+}
+
+@media only screen and (max-width: 768px) {
+    .image-links img {
+        width: 100%;
+        height: auto;
+        border-radius: 10px;
+        transition: transform 0.3s ease-in-out;
+    }
+    img {
+        max-width: 100%; /* Изображение займет максимально возможную ширину контейнера */
+        height: auto; /* Сохранение пропорций изображения */
+    }
+}
+
+/* Стили для списка элементов меню на маленьких экранах */
+@media only screen and (max-width: 768px) {
+    nav ul {
+        flex-direction: column; /* Меняем направление flex контейнера на вертикальное */
+        align-items: center; /* Выравниваем элементы по центру */
+    }
+
+    nav li {
+        margin-right: 0; /* Убираем правый отступ у элементов меню */
+        margin-bottom: 10px; /* Добавляем отступ между элементами меню */
+    }
+
+    nav a {
+        padding: 10px; /* Уменьшаем вертикальный отступ у ссылок */
+    }
+}
+
+/* Общие стили для формы */
+form {
+    max-width: 600px; /* Максимальная ширина формы */
+    margin: 0 auto;   /* Выравнивание формы по центру */
+    padding: 20px;
+}
+
+/* Дополнительные стили для мобильных устройств (ширина экрана меньше 600px) */
+@media screen and (max-width: 600px) {
+    form {
+        padding: 10px;  /* Уменьшаем внутренние отступы для мобильных устройств */
+    }
+}
+
+/* Дополнительные стили для планшетов (ширина экрана между 600px и 1024px) */
+@media screen and (min-width: 601px) and (max-width: 1024px) {
+    form {
+        font-size: 14px; /* Уменьшаем размер шрифта для более крупных экранов */
+    }
+}
+
+/* Дополнительные стили для более крупных устройств (ширина экрана более 1024px) */
+@media screen and (min-width: 1025px) {
+    form {
+        padding: 30px; /* Увеличиваем внутренние отступы для более крупных экранов */
+    }
+}

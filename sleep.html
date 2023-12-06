@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сон и отдых</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .repeating-content {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-around;
+            margin-top: 20px;
+        }
+
+        .content-block {
+            width: 30%;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .content-block img {
+            width: 100%;
+            height: auto;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <nav>
+        <ul>
+            <li><a href="main_content.html" target="contentFrame">Главная</a></li>
+            <li><a href="nutrition.html" target="contentFrame">Питание</a></li>
+            <li><a href="exercise.html" target="contentFrame">Физическая активность</a></li>
+            <li><a href="wellbeing.html" target="contentFrame">Психологическое благополучие</a></li>
+            <li><a href="sleep.html" target="contentFrame" class="current">Сон и отдых</a></li>
+        </ul>
+    </nav>
+
+    <h2>Сон и отдых</h2>
+    <p>Качественный сон важен для общего здоровья и благополучия. Обеспечьте себе комфортные условия для сна.</p>
+    <p>Поддерживайте регулярный режим сна, избегайте стресса перед сном и создайте уютную атмосферу в спальне.</p>
+
+    <!-- Повторяющийся контент с использованием JavaScript -->
+    <div class="repeating-content" id="repeatingContent"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var repeatingContent = document.getElementById('repeatingContent');
+
+            for (var i = 1; i <= 10; i++) {
+                var contentBlock = document.createElement('div');
+                contentBlock.className = 'content-block';
+
+                var image = document.createElement('img');
+                image.src = 'image' + i + '.jpg';
+                image.alt = 'Image ' + i;
+
+                var numberText = document.createTextNode('Товар ' + i);
+
+                contentBlock.appendChild(image);
+                contentBlock.appendChild(numberText);
+
+                repeatingContent.appendChild(contentBlock);
+            }
+        });
+    </script>
+
+</body>
+
+</html>
