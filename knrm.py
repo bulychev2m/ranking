@@ -26,6 +26,7 @@ class GaussianKernel(torch.nn.Module):
         return torch.exp(-1 * (x - self.mu) ** 2 / (2 * self.sigma ** 2))
 
 
+
 class KNRM(torch.nn.Module):
     def __init__(self, embedding_matrix: np.ndarray, freeze_embeddings: bool, kernel_num: int = 21,
                  sigma: float = 0.1, exact_sigma: float = 0.001,
@@ -123,23 +124,26 @@ class RankingDataset(torch.utils.data.Dataset):
     def __init__(self, index_pairs_or_triplets: List[List[Union[str, float]]],
                  idx_to_text_mapping: Dict[str, str], vocab: Dict[str, int], oov_val: int,
                  preproc_func: Callable, max_len: int = 30):
-        self.index_pairs_or_triplets = index_pairs_or_triplets
-        self.idx_to_text_mapping = idx_to_text_mapping
-        self.vocab = vocab
-        self.oov_val = oov_val
-        self.preproc_func = preproc_func
-        self.max_len = max_len
+        self.index_pairs_or_triplets = index_pairs_or_triplets      # список троек : [[query_id, document_id, label]...] для валидации
+                                                                    # или четверок [[query_id, document_1_id, document_2_id, label]...] для трейна
+        self.idx_to_text_mapping = idx_to_text_mapping              # словарь - id вопроса: вопрос
+        self.vocab = vocab                                          # словарь - токен: №строки в матрице
+        self.oov_val = oov_val                                      # индекс в словаре эмбеддингов для слова которого не было в трэйне
+        self.preproc_func = preproc_func                            # предобработка и токенизация слов
+        self.max_len = max_len                                      # максимальное число токенов в тексте
 
     def __len__(self):
         return len(self.index_pairs_or_triplets)
 
     def _tokenized_text_to_index(self, tokenized_text: List[str]) -> List[int]:
-        # допишите ваш код здесь
-        pass
+        """список токенов -> список id токенов в словаре с №строк в матрице эмбеддингов"""
+        return [self.vocab[token] for token in tokenized_text]
 
     def _convert_text_idx_to_token_idxs(self, idx: int) -> List[int]:
-        # допишите ваш код здесь
-        pass
+        """id вопроса (id_left или id_right) -> ids токенов"""
+        text = self.idx_to_text_mapping[idx]
+        tokenized_text = self.preproc_func(text)
+        return self._tokenized_text_to_index(tokenized_text)
 
     def __getitem__(self, idx: int):
         pass
@@ -147,15 +151,28 @@ class RankingDataset(torch.utils.data.Dataset):
 
 class TrainTripletsDataset(RankingDataset):
     def __getitem__(self, idx):
-        pass
+        """label — ответ на вопрос, действительно ли первый документ более релевантен запросу, чем второй"""
+        query_id, document_1_id, document_2_id, label = self.index_pairs_or_triplets
+        query = self._convert_text_idx_to_token_idxs(query_id)
+        document_1 = self._convert_text_idx_to_token_idxs(document_1_id)
+        document_2 = self._convert_text_idx_to_token_idxs(document_2_id)
+        return {'query': query, 'document': document_1}, {'query': query, 'document': document_2}, label
 
 
 class ValPairsDataset(RankingDataset):
     def __getitem__(self, idx):
-        pass
+        """label - релевантность от 0 до 2"""
+        query_id, document_id, label = self.index_pairs_or_triplets[idx]
+        query = self._convert_text_idx_to_token_idxs(query_id)
+        document = self._convert_text_idx_to_token_idxs(document_id)
+        return {'query': query, 'document': document}, label
+
 
 
 def collate_fn(batch_objs: List[Union[Dict[str, torch.Tensor], torch.FloatTensor]]):
+    """обработка пакета данных, где каждый элемент пакета может быть либо парой, либо триплетом. 
+       Функция дополняет последовательности, чтобы обеспечить, 
+       что все элементы в пакете имеют одинаковую длину"""
     max_len_q1 = -1
     max_len_d1 = -1
     max_len_q2 = -1
@@ -252,13 +269,13 @@ class Solution:
         self.idx_to_text_mapping_dev = self.get_idx_to_text_mapping(
             self.glue_dev_df)
 
-        # self.val_dataset = ValPairsDataset(self.dev_pairs_for_ndcg,
-        #       self.idx_to_text_mapping_dev,
-        #       vocab=self.vocab, oov_val=self.vocab['OOV'],
-        #       preproc_func=self.simple_preproc)
-        # self.val_dataloader = torch.utils.data.DataLoader(
-        #     self.val_dataset, batch_size=self.dataloader_bs, num_workers=0,
-        #     collate_fn=collate_fn, shuffle=False)
+        self.val_dataset = ValPairsDataset(self.dev_pairs_for_ndcg,
+              self.idx_to_text_mapping_dev,
+              vocab=self.vocab, oov_val=self.vocab['OOV'],
+              preproc_func=self.simple_preproc)
+        self.val_dataloader = torch.utils.data.DataLoader(
+            self.val_dataset, batch_size=self.dataloader_bs, num_workers=0,
+            collate_fn=collate_fn, shuffle=False)
 
 
     def get_glue_df(self, partition_type: str) -> pd.DataFrame:
@@ -294,6 +311,7 @@ class Solution:
 
 
     def get_all_tokens(self, list_of_df: List[pd.DataFrame], min_occurancies: int) -> List[str]:
+        """получаем все токены датафрейма"""
         token_frequency_dict = {}
         for df in list_of_df:
             for text in set(df['text_left']) | set(df['text_right']):
@@ -319,6 +337,11 @@ class Solution:
     def create_glove_emb_from_file(self, file_path: str, inner_keys: List[str],
                                    random_seed: int, rand_uni_bound: float
                                    ) -> Tuple[np.ndarray, Dict[str, int], List[str]]:
+        """vocab : словарь с ключами - токенами, значениями - индекс строки в матрице эмбэддингов
+                   для всех токенов на которых тренировалась модель (len = (N+2))
+           emb   : матрица эбэддингов, по строкам - эмбэддинги слов
+           unk_words : токены которых не было в скачанном датасете эмбеддингов GloVe
+        """
         np.random.seed(random_seed)
         token_embedding_dict = self._read_glove_embeddings(file_path) # известные токены
         # inner_keys == self.all_tokens
@@ -347,13 +370,74 @@ class Solution:
         return knrm, vocab, unk_words
 
 
-    def sample_data_for_train_iter(self, inp_df: pd.DataFrame, seed: int
-                                   ) -> List[List[Union[str, float]]]:
-        pass
+    def sample_data_for_train_iter(self, inp_df: pd.DataFrame, seed: int, one_query_quantity: int = 4,
+                                    min_group_size: int = 4, sample_length: int = 8000) -> List[List[Union[str, float]]]:
+        """на выходе список : [[query_id, document_1_id, document_2_id, label]...]
+            label — ответ на вопрос, действительно ли первый документ более релевантен запросу, чем второй
+            Хотим нагенерировать ~10000 примеров для тренировки.
+            label = 0: релевантности (0, 1), (0, 2), (1, 2) таких ~5000 примеров
+            label = 1: релевантности (1, 0), (2, 0), (2, 1) таких ~5000 примеров
+        """
+        # one_query_quantity = 4  # сколько в выборке будет примеров с одним query_id
+        # min_group_size = 4
+        # sample_length = 10000
+
+        inp_df_select = inp_df[['id_left', 'id_right', 'label']]
+        inf_df_group_sizes = inp_df_select.groupby('id_left').size()
+        glue_dev_leftids_to_use = list(
+            inf_df_group_sizes[inf_df_group_sizes >= min_group_size].index)
+        groups = inp_df_select[inp_df_select.id_left.isin(
+            glue_dev_leftids_to_use)].groupby('id_left')
+
+        all_ids = set(inp_df['id_left']).union(set(inp_df['id_right']))
+
+        out_pairs = []
+
+        np.random.seed(seed)
+        
+        num_pairs_one_relevant = 0 # число пар документов с одним релевантным (01 или 02)
+        for query_id, group in groups:
+            """в group все релевантные документы для запроса query_id
+            для каждого query_id выберем по one_query_quantity / 2 триплетов с label = 1 и label = 0"""
+            ones_ids = group[group.label > 0].id_right.values
+            zeroes_ids = group[group.label == 0].id_right.values
+            cur_chosen = set(ones_ids).union(set(zeroes_ids)).union({id_left})
+
+            if len(out_pairs) > sample_length:
+                break
+
+            if (
+                len(ones_ids) * len(zeroes_ids) == 0 and 
+                num_pairs_one_relevant < sample_length * 0.6
+                ):
+                num_pairs_one_relevant += 1
+                # если в группе все либо полные дупликаты либо все просто очень похожи
+                # в этом случае в каждом триплете будет нерелевантный документ
+                not_relevant_docs = np.random.choice(
+                    list(all_ids - cur_chosen), one_query_quantity, replace=False).tolist()
+                relevant_docs = np.random.choice(
+                    list(cur_chosen), one_query_quantity, replace=True).tolist()
+                for i in range(one_query_quantity//2):
+                    out_pairs.append([query_id, relevant_docs[i], not_relevant_docs[i], 1])
+                for i in range(one_query_quantity//2, one_query_quantity):
+                    out_pairs.append([query_id, not_relevant_docs[i], relevant_docs[i], 0])
+
+            elif len(ones_ids) * len(zeroes_ids) == 0:
+                # в группе есть как полные дупликаты так и просто очень похожие
+                local_counter = 0
+                for one_rel_doc in ones_ids:
+                    for zero_rel_doc in zeroes_ids:
+                        if local_counter % 2 == 0:
+                            out_pairs.append([query_id, one_rel_doc, zero_rel_doc, 1])
+                        else:
+                            out_pairs.append([query_id, zero_rel_doc, one_rel_doc, 0])
+        return out_pairs
 
 
     def create_val_pairs(self, inp_df: pd.DataFrame, fill_top_to: int = 15,
                          min_group_size: int = 2, seed: int = 0) -> List[List[Union[str, float]]]:
+        """на выходе список троек : [[id_left, id_right, label]...]
+           fill_top_to - какое минимальное число раз id_left должно встретиться в валидационной выборке (в качестве запроса)"""
         inp_df_select = inp_df[['id_left', 'id_right', 'label']]
         inf_df_group_sizes = inp_df_select.groupby('id_left').size()
         glue_dev_leftids_to_use = list(
@@ -368,6 +452,7 @@ class Solution:
         np.random.seed(seed)
 
         for id_left, group in groups:
+            """в group все релевантные документы для запроса id_left"""
             ones_ids = group[group.label > 0].id_right.values
             zeroes_ids = group[group.label == 0].id_right.values
             sum_len = len(ones_ids) + len(zeroes_ids)
@@ -387,7 +472,9 @@ class Solution:
                 out_pairs.append([id_left, i, 0])
         return out_pairs
 
+
     def get_idx_to_text_mapping(self, inp_df: pd.DataFrame) -> Dict[str, str]:
+        """на выходе словарь - id вопроса: вопрос"""
         left_dict = (
             inp_df
             [['id_left', 'text_left']]
@@ -407,9 +494,11 @@ class Solution:
         left_dict.update(right_dict)
         return left_dict
 
+
     def ndcg_k(self, ys_true: np.array, ys_pred: np.array, ndcg_top_k: int = 10) -> float:
-        # (внимание, что используются вектора numpy)
+        # (внимание, используются вектора numpy)
         pass
+
 
     def valid(self, model: torch.nn.Module, val_dataloader: torch.utils.data.DataLoader) -> float:
         labels_and_groups = val_dataloader.dataset.index_pairs_or_triplets
