@@ -12,9 +12,9 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 import time
-from joblib import Memory
 import pickle
-memory = Memory(location='./cache', verbose=0) # Инициализация кэша
+# from joblib import Memory
+# memory = Memory(location='./cache', verbose=0) # Инициализация кэша
 
 
 
@@ -98,6 +98,7 @@ class KNRM(torch.nn.Module):
 
 
     def _get_matching_matrix(self, query: torch.Tensor, doc: torch.Tensor) -> torch.FloatTensor:
+        # B - размерность батча, L - количество слов, D - размерность эмбэддинга
         # shape = [B, L, D]
         embed_query = self.embeddings(query.long())
         # shape = [B, R, D]
@@ -158,7 +159,7 @@ class RankingDataset(torch.utils.data.Dataset):
 
     def _tokenized_text_to_index(self, tokenized_text: List[str]) -> List[int]:
         """список токенов -> список id токенов в словаре с №строк в матрице эмбеддингов"""
-        return [self.vocab[token] for token in tokenized_text]
+        return [self.vocab.get(token, self.oov_val) for token in tokenized_text]
 
     def _convert_text_idx_to_token_idxs(self, idx: int) -> List[int]:
         """id вопроса (id_left или id_right) -> ids токенов"""
@@ -178,19 +179,6 @@ class TrainTripletsDataset(RankingDataset):
         query = self._convert_text_idx_to_token_idxs(query_id)[:self.max_len]  # длина запроса self.max_len токенов
         document_1 = self._convert_text_idx_to_token_idxs(document_1_id)[:self.max_len]
         document_2 = self._convert_text_idx_to_token_idxs(document_2_id)[:self.max_len]
-        
-        lengths = {len(query), len(document_1), len(document_2)}
-        if len(lengths) > 1: # проверка что запрос и доки одной длины
-            max_len = max(lengths)
-            if len(query) < max_len:
-                len_diff = max_len - len(query)
-                query += [0] * len_diff
-            if len(document_1) < max_len:
-                len_diff = max_len - len(query)
-                document_1 += [0] * len_diff
-            if len(document_2) < max_len:
-                len_diff = max_len - len(query)
-                document_2 += [0] * len_diff
         return {'query': query, 'document': document_1}, {'query': query, 'document': document_2}, label
 
 
@@ -198,8 +186,8 @@ class ValPairsDataset(RankingDataset):
     def __getitem__(self, idx):
         """label - релевантность {0, 1, 2}"""
         query_id, document_id, label = self.index_pairs_or_triplets[idx]
-        query = self._convert_text_idx_to_token_idxs(query_id)
-        document = self._convert_text_idx_to_token_idxs(document_id)
+        query = self._convert_text_idx_to_token_idxs(query_id)[:self.max_len]
+        document = self._convert_text_idx_to_token_idxs(document_id)[:self.max_len]
         return {'query': query, 'document': document}, label
 
 
@@ -336,7 +324,9 @@ class Solution:
 
 
     def simple_preproc(self, inp_str: str) -> List[str]:
-        """предобработка и токенизация слов"""
+        """предобработка и токенизация слов
+           МОЕМ КОДЕ ПРЕДОБРАБОТКА СДЕЛАНА САМОСТОЯТЕЛЬНО, ВООБЩЕ КОГДА БЕРЕМ ПРЕДОБУЧЕННЫЕ ЭМБЕДДИНГИ 
+           НУЖНО БРАТЬ ПРЕДОБРАБОТКУ С САЙТА, ГДЕ БЫЛИ СКАЧАНЫ ЭМБЕДДИНГИ"""
         string_without_punctuation = self.handle_punctuation(inp_str)
         return nltk.word_tokenize(string_without_punctuation.lower())
 
@@ -359,7 +349,7 @@ class Solution:
 
     def _read_glove_embeddings(self, file_path: str) -> Dict[str, List[str]]:
         """словарь - слово: эмбеддинг"""
-        with open(file_path, 'r') as file:
+        with open(file_path, 'r', encoding='utf-8') as file:
             word_embedding_dict = {}
             for line in file:
                 parts = line.split()
@@ -405,70 +395,33 @@ class Solution:
         return knrm, vocab, unk_words
 
 
-    @staticmethod
-    @memory.cache
-    def sample_data_for_train_iter(inp_df: pd.DataFrame, seed: int = 0, one_query_quantity: int = 4,
-                                    min_group_size: int = 4, sample_length: int = 8000) -> List[List[Union[str, float]]]:
+    def sample_data_for_train_iter(self, inp_df: pd.DataFrame, seed: int = 0) -> List[List[Union[str, float]]]:
         """на выходе список : [[query_id, document_1_id, document_2_id, label]...]
             label — ответ на вопрос, действительно ли первый документ более релевантен запросу, чем второй
-            Хотим нагенерировать ~10000 примеров для тренировки.
-            label = 0: релевантности (0, 1), (0, 2), (1, 2) таких ~5000 примеров
-            label = 1: релевантности (1, 0), (2, 0), (2, 1) таких ~5000 примеров
+            label = 0: релевантности (0, 1), (0, 2), (1, 2)
+            label = 1: релевантности (1, 0), (2, 0), (2, 1)
         """
-        # one_query_quantity = 4  # сколько в выборке будет примеров с одним query_id
-        # min_group_size = 4
-        # sample_length = 10000
-
-        inp_df_select = inp_df[['id_left', 'id_right', 'label']]
-        inf_df_group_sizes = inp_df_select.groupby('id_left').size()
-        glue_dev_leftids_to_use = list(
-            inf_df_group_sizes[inf_df_group_sizes >= min_group_size].index)
-        groups = inp_df_select[inp_df_select.id_left.isin(
-            glue_dev_leftids_to_use)].groupby('id_left')
-
-        all_ids = set(inp_df['id_left']).union(set(inp_df['id_right']))
-
-        out_pairs = []
-
+        groups = inp_df[['id_left', 'id_right', 'label']].groupby('id_left')
+        pairs_w_labels = []
         np.random.seed(seed)
-        
-        num_pairs_one_relevant = 0 # число пар документов с одним релевантным (01 или 02)
-        for query_id, group in tqdm(groups):
-            """в group все релевантные документы для запроса query_id
-            для каждого query_id выберем по one_query_quantity / 2 триплетов с label = 1 и label = 0"""
-            ones_ids = group[group.label > 0].id_right.values
-            zeroes_ids = group[group.label == 0].id_right.values
-            cur_chosen = set(ones_ids).union(set(zeroes_ids)).union({query_id})
-
-            if len(out_pairs) > sample_length:
-                break
-
-            if (
-                len(ones_ids) * len(zeroes_ids) == 0 and 
-                num_pairs_one_relevant < sample_length * 0.6
-                ):
-                num_pairs_one_relevant += 1
-                # если в группе все либо полные дупликаты либо все просто очень похожи
-                # в этом случае в каждом триплете будет нерелевантный документ
-                not_relevant_docs = np.random.choice(
-                    list(all_ids - cur_chosen), one_query_quantity, replace=False).tolist()
-                relevant_docs = np.random.choice(
-                    list(cur_chosen), one_query_quantity, replace=True).tolist()
-                for i in range(one_query_quantity//2):
-                    out_pairs.append([query_id, relevant_docs[i], not_relevant_docs[i], 1])
-                for i in range(one_query_quantity//2, one_query_quantity):
-                    out_pairs.append([query_id, not_relevant_docs[i], relevant_docs[i], 0])
-
-            elif len(ones_ids) * len(zeroes_ids) == 0:
-                # в группе есть как полные дупликаты так и просто очень похожие
-                local_counter = 0
-                for one_rel_doc in ones_ids:
-                    for zero_rel_doc in zeroes_ids:
-                        if local_counter % 2 == 0:
-                            out_pairs.append([query_id, one_rel_doc, zero_rel_doc, 1])
+        all_right_ids = inp_df.id_right.values
+        for id_left, group in groups: # группировка по id_left
+            labels = group.label.unique()
+            if len(labels) > 1:
+                for label in labels: # [0, 1]
+                    same_label_samples = group[group.label == label].id_right.values
+                    if label == 0 and len(same_label_samples) > 1:
+                        sample = np.random.choice(same_label_samples, 2, replace=False)
+                        pairs_w_labels.append([id_left, sample[0], sample[1], 0.5])
+                    elif label == 1:
+                        less_label_samples = group[group.label < label].id_right.values
+                        pos_sample = np.random.choice(same_label_samples, 1, replace=False)
+                        if len(less_label_samples) > 0:
+                            neg_sample = np.random.choice(less_label_samples, 1, replace=False)
                         else:
-                            out_pairs.append([query_id, zero_rel_doc, one_rel_doc, 0])
-        return out_pairs
+                            neg_sample = np.random.choice(all_right_ids, 1, replace=False)
+                        pairs_w_labels.append([id_left, pos_sample[0], neg_sample[0], 1])
+        return pairs_w_labels
 
 
     def create_val_pairs(self, inp_df: pd.DataFrame, fill_top_to: int = 15,
@@ -574,36 +527,39 @@ class Solution:
     def train(self, n_epochs: int):
         opt = torch.optim.SGD(self.model.parameters(), lr=self.train_lr)
         criterion = torch.nn.BCELoss()
-
-        self.train_dataset = TrainTripletsDataset(
-              Solution.sample_data_for_train_iter(self.glue_train_df),
-              self.idx_to_text_mapping_train,
-              vocab=self.vocab, oov_val=self.vocab['OOV'],
-              preproc_func=self.simple_preproc
-        )
-        self.train_dataloader = torch.utils.data.DataLoader(
-            self.train_dataset, batch_size=self.dataloader_bs, num_workers=0,
-            collate_fn=collate_fn, shuffle=False)
+        total_loss = 0
+        losses = []
+        ndcgs = []
 
         for epoch_no in tqdm(range(n_epochs)):
-            self.model.train() # модель в режиме тренировки
+
+            if epoch_no % self.change_train_loader_ep == 0: # каждые сколько-то эпох меняем тренировочные данные
+                train_dataset = TrainTripletsDataset(
+                    self.sample_data_for_train_iter(self.glue_train_df),
+                    self.idx_to_text_mapping_train,
+                    vocab=self.vocab, oov_val=self.vocab['OOV'],
+                    preproc_func=self.simple_preproc
+                )
+                train_dataloader = torch.utils.data.DataLoader(
+                    train_dataset, batch_size=self.dataloader_bs, num_workers=0,
+                    collate_fn=collate_fn, shuffle=False)
+
             total_loss = 0
-            for batch in self.train_dataloader:
+            for batch in (train_dataloader):
                 inp_1, inp_2, labels = batch
                 # inp_1 : query_i: doc_1        inp_2 : query_i: doc_2 
-                # В inp_1['query'] находится тензор, который содержит 1024 запроса, каждый из которых состоит из 30 идентификаторов токенов
+                # В inp_1['query'] находится тензор, который содержит 1024 запроса, каждый из которых состоит из 30 или меньше идентификаторов токенов
                 opt.zero_grad()
-                outputs = self.model(inp_1, inp_2)
-                loss = criterion(outputs, labels)
+                preds = self.model(inp_1, inp_2)
+                loss = criterion(preds, labels)
                 loss.backward()
                 opt.step()
-                total_loss += loss.item()
+                total_loss += loss
 
-            print(f'Epoch {epoch_no + 1}/{n_epochs}, Loss: {total_loss / len(self.train_dataloader)}')
-
-            if (epoch_no + 1) % 2 == 0:
-                val_ndcg = self.valid(self.model, self.val_dataloader)
-                print(f'Validation NDCG: {val_ndcg}')
+            losses.append(total_loss / len(train_dataloader))
+            ndcg = self.valid(self.model, self.val_dataloader)
+            ndcgs.append(ndcg)
+        return losses, ndcgs
 
 
     def save_solution(self, path: str):
@@ -625,9 +581,39 @@ def main():
     print(f"Начинаем создание тренировочного датасета и тренировку модели, инициализация заняла {start_training_time - start_program_time} сек")
     # Сохраняем объект класса Solution после инициализации
     solution.save_solution('solution_model.pkl')
-    print("успешно загрузили модель")
-    solution.train(10)
+    print("успешно загрузили модель, начинаем тренировку")
+    losses, ndcgs = solution.train(20)
     print(f"Тренировка заняла {time.time() - start_training_time} сек")
+    draw_ndcgs(ndcgs)
+    draw_losses(losses)
+    
+
+def draw_ndcgs(ndcgs: List):
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(ndcgs, marker='o')
+
+    plt.title('NDCG per Epoch')
+    plt.xlabel('Epoch')
+    plt.ylabel('NDCG')
+    plt.grid(True)
+
+    # Отображение графика
+    plt.show()
+    
+
+def draw_losses(losses: List):
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(losses, marker='o')
+
+    plt.title('losses per Epoch')
+    plt.xlabel('Epoch')
+    plt.ylabel('losses')
+    plt.grid(True)
+    plt.show()
 
 
 def continue_training(path: str, additional_epochs: int):
@@ -644,4 +630,4 @@ def main_after_loading():
 
 
 if __name__ == "__main__":
-    main_after_loading()
+    main()
