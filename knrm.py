@@ -9,6 +9,13 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
+from torch.nn.utils.rnn import pad_sequence
+from tqdm import tqdm
+import time
+from joblib import Memory
+import pickle
+memory = Memory(location='./cache', verbose=0) # Инициализация кэша
+
 
 
 glue_qqp_dir = '.'
@@ -91,7 +98,18 @@ class KNRM(torch.nn.Module):
 
 
     def _get_matching_matrix(self, query: torch.Tensor, doc: torch.Tensor) -> torch.FloatTensor:
-        return F.cosine_similarity(query.unsqueeze(1), doc.unsqueeze(0), dim=2)
+        # shape = [B, L, D]
+        embed_query = self.embeddings(query.long())
+        # shape = [B, R, D]
+        embed_doc = self.embeddings(doc.long())
+        
+        # shape = [B, L, R]
+        matching_matrix = torch.einsum(
+            'bld,brd->blr', # выполняем поэлементное умножение между нормализованными векторами запроса и документа, а затем суммируем по оси d
+            F.normalize(embed_query, p=2, dim=-1), # Нормализует каждый вектор в embed_query по L2 норме вдоль последней оси
+            F.normalize(embed_doc, p=2, dim=-1)
+        )
+        return matching_matrix
 
 
     def _apply_kernels(self, matching_matrix: torch.FloatTensor) -> torch.FloatTensor:
@@ -101,15 +119,18 @@ class KNRM(torch.nn.Module):
             K = torch.log1p(kernel(matching_matrix).sum(dim=-1)).sum(dim=-1)
             KM.append(K)
 
+        if len(KM) == 0:
+            raise ValueError("No kernels were applied.")
+
         # shape = [B, K]
         kernels_out = torch.stack(KM, dim=1)
         return kernels_out
 
 
     def predict(self, inputs: Dict[str, torch.Tensor]) -> torch.FloatTensor:
+        """на входе - запрос и документ, на выходе релевантность {0, 1, 2}"""
         # shape = [Batch, Left], [Batch, Right]
         query, doc = inputs['query'], inputs['document']
-
         # shape = [Batch, Left, Right]
         matching_matrix = self._get_matching_matrix(query, doc)
         # shape = [Batch, Kernels]
@@ -151,17 +172,31 @@ class RankingDataset(torch.utils.data.Dataset):
 
 class TrainTripletsDataset(RankingDataset):
     def __getitem__(self, idx):
-        """label — ответ на вопрос, действительно ли первый документ более релевантен запросу, чем второй"""
-        query_id, document_1_id, document_2_id, label = self.index_pairs_or_triplets
-        query = self._convert_text_idx_to_token_idxs(query_id)
-        document_1 = self._convert_text_idx_to_token_idxs(document_1_id)
-        document_2 = self._convert_text_idx_to_token_idxs(document_2_id)
+        """вывод - список словарей со СПИСКАМИ ТОКЕНОВ В ЗАПРОСЕ И ДОКУМЕНТАХ
+           label — ответ на вопрос, действительно ли первый документ более релевантен запросу, чем второй"""
+        query_id, document_1_id, document_2_id, label = self.index_pairs_or_triplets[idx]
+        query = self._convert_text_idx_to_token_idxs(query_id)[:self.max_len]  # длина запроса self.max_len токенов
+        document_1 = self._convert_text_idx_to_token_idxs(document_1_id)[:self.max_len]
+        document_2 = self._convert_text_idx_to_token_idxs(document_2_id)[:self.max_len]
+        
+        lengths = {len(query), len(document_1), len(document_2)}
+        if len(lengths) > 1: # проверка что запрос и доки одной длины
+            max_len = max(lengths)
+            if len(query) < max_len:
+                len_diff = max_len - len(query)
+                query += [0] * len_diff
+            if len(document_1) < max_len:
+                len_diff = max_len - len(query)
+                document_1 += [0] * len_diff
+            if len(document_2) < max_len:
+                len_diff = max_len - len(query)
+                document_2 += [0] * len_diff
         return {'query': query, 'document': document_1}, {'query': query, 'document': document_2}, label
 
 
 class ValPairsDataset(RankingDataset):
     def __getitem__(self, idx):
-        """label - релевантность от 0 до 2"""
+        """label - релевантность {0, 1, 2}"""
         query_id, document_id, label = self.index_pairs_or_triplets[idx]
         query = self._convert_text_idx_to_token_idxs(query_id)
         document = self._convert_text_idx_to_token_idxs(document_id)
@@ -337,7 +372,7 @@ class Solution:
     def create_glove_emb_from_file(self, file_path: str, inner_keys: List[str],
                                    random_seed: int, rand_uni_bound: float
                                    ) -> Tuple[np.ndarray, Dict[str, int], List[str]]:
-        """vocab : словарь с ключами - токенами, значениями - индекс строки в матрице эмбэддингов
+        """vocab : словарь - токен: его значение в матрице эмбэддингов
                    для всех токенов на которых тренировалась модель (len = (N+2))
            emb   : матрица эбэддингов, по строкам - эмбэддинги слов
            unk_words : токены которых не было в скачанном датасете эмбеддингов GloVe
@@ -370,7 +405,9 @@ class Solution:
         return knrm, vocab, unk_words
 
 
-    def sample_data_for_train_iter(self, inp_df: pd.DataFrame, seed: int, one_query_quantity: int = 4,
+    @staticmethod
+    @memory.cache
+    def sample_data_for_train_iter(inp_df: pd.DataFrame, seed: int = 0, one_query_quantity: int = 4,
                                     min_group_size: int = 4, sample_length: int = 8000) -> List[List[Union[str, float]]]:
         """на выходе список : [[query_id, document_1_id, document_2_id, label]...]
             label — ответ на вопрос, действительно ли первый документ более релевантен запросу, чем второй
@@ -396,12 +433,12 @@ class Solution:
         np.random.seed(seed)
         
         num_pairs_one_relevant = 0 # число пар документов с одним релевантным (01 или 02)
-        for query_id, group in groups:
+        for query_id, group in tqdm(groups):
             """в group все релевантные документы для запроса query_id
             для каждого query_id выберем по one_query_quantity / 2 триплетов с label = 1 и label = 0"""
             ones_ids = group[group.label > 0].id_right.values
             zeroes_ids = group[group.label == 0].id_right.values
-            cur_chosen = set(ones_ids).union(set(zeroes_ids)).union({id_left})
+            cur_chosen = set(ones_ids).union(set(zeroes_ids)).union({query_id})
 
             if len(out_pairs) > sample_length:
                 break
@@ -496,8 +533,18 @@ class Solution:
 
 
     def ndcg_k(self, ys_true: np.array, ys_pred: np.array, ndcg_top_k: int = 10) -> float:
-        # (внимание, используются вектора numpy)
-        pass
+        def _dcg_k(ys_true, ys_pred, dcg_top_k):
+            # Сортировка индексов по убыванию значений ys_pred
+            argsort = np.argsort(ys_pred)[::-1]
+            argsort = argsort[:dcg_top_k]
+            ys_true_sorted = ys_true[argsort]
+            res = 0
+            for i, l in enumerate(ys_true_sorted, 1):
+                res += (2 ** l - 1) / math.log2(i + 1)
+            return res
+        idcg_k_result = _dcg_k(ys_true, ys_true, dcg_top_k=ndcg_top_k)
+        dcg_k_result = _dcg_k(ys_true, ys_pred, dcg_top_k=ndcg_top_k)
+        return (dcg_k_result / idcg_k_result).item()
 
 
     def valid(self, model: torch.nn.Module, val_dataloader: torch.utils.data.DataLoader) -> float:
@@ -523,22 +570,78 @@ class Solution:
                 ndcgs.append(ndcg)
         return np.mean(ndcgs)
 
+
     def train(self, n_epochs: int):
         opt = torch.optim.SGD(self.model.parameters(), lr=self.train_lr)
         criterion = torch.nn.BCELoss()
-        pass
+
+        self.train_dataset = TrainTripletsDataset(
+              Solution.sample_data_for_train_iter(self.glue_train_df),
+              self.idx_to_text_mapping_train,
+              vocab=self.vocab, oov_val=self.vocab['OOV'],
+              preproc_func=self.simple_preproc
+        )
+        self.train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataset, batch_size=self.dataloader_bs, num_workers=0,
+            collate_fn=collate_fn, shuffle=False)
+
+        for epoch_no in tqdm(range(n_epochs)):
+            self.model.train() # модель в режиме тренировки
+            total_loss = 0
+            for batch in self.train_dataloader:
+                inp_1, inp_2, labels = batch
+                # inp_1 : query_i: doc_1        inp_2 : query_i: doc_2 
+                # В inp_1['query'] находится тензор, который содержит 1024 запроса, каждый из которых состоит из 30 идентификаторов токенов
+                opt.zero_grad()
+                outputs = self.model(inp_1, inp_2)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                opt.step()
+                total_loss += loss.item()
+
+            print(f'Epoch {epoch_no + 1}/{n_epochs}, Loss: {total_loss / len(self.train_dataloader)}')
+
+            if (epoch_no + 1) % 2 == 0:
+                val_ndcg = self.valid(self.model, self.val_dataloader)
+                print(f'Validation NDCG: {val_ndcg}')
+
+
+    def save_solution(self, path: str):
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+
+
+
+def load_solution(path: str) -> 'Solution':
+    with open(path, 'rb') as f:
+        return pickle.load(f)
 
 
 
 def main():
+    start_program_time = time.time()
     solution = Solution(glue_qqp_dir=glue_qqp_dir, glove_vectors_path=glove_path)
-    print(solution.test1)
-    print()
-    print(solution.test2)
-    print()
-    print(solution.test3)
-    
+    start_training_time = time.time()
+    print(f"Начинаем создание тренировочного датасета и тренировку модели, инициализация заняла {start_training_time - start_program_time} сек")
+    # Сохраняем объект класса Solution после инициализации
+    solution.save_solution('solution_model.pkl')
+    print("успешно загрузили модель")
+    solution.train(10)
+    print(f"Тренировка заняла {time.time() - start_training_time} сек")
+
+
+def continue_training(path: str, additional_epochs: int):
+    # Загружаем объект класса Solution
+    loaded_solution = load_solution(path)
+
+    # Продолжаем тренировку
+    loaded_solution.train(additional_epochs)
+
+
+def main_after_loading():
+    continue_training('solution_model.pkl', 20)
+
 
 
 if __name__ == "__main__":
-    main()
+    main_after_loading()
